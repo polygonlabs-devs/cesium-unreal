@@ -1779,7 +1779,7 @@ void UCesiumGltfComponent::AttachRasterTile(
           textureCoordinateRectangle.maximumY),
       FLinearColor(translation.x, translation.y, scale.x, scale.y)});
 
-  if (this->OverlayTiles.Num() > 3) {
+  if (this->OverlayTiles.Num() > 6) {
     UE_LOG(LogCesium, Warning, TEXT("Too many raster overlays"));
   }
 
