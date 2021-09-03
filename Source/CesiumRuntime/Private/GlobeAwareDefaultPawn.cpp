@@ -260,6 +260,8 @@ void AGlobeAwareDefaultPawn::FlyToLocationECEF(
   // Tell the tick we will be flying from now
   this->_bFlyingToLocation = true;
   this->_bCanInterruptFlight = CanInterruptByMoving;
+  auto controller = GetWorld()->GetFirstPlayerController();
+  DisableInput(controller);
 }
 
 void AGlobeAwareDefaultPawn::InaccurateFlyToLocationECEF(
@@ -323,15 +325,18 @@ void AGlobeAwareDefaultPawn::_handleFlightStep(float DeltaSeconds) {
   }
 
   this->_currentFlyTime += static_cast<double>(DeltaSeconds);
+  auto controller = GetWorld()->GetFirstPlayerController();
 
   // double check that we don't have an empty list of keypoints
   if (this->_keypoints.size() == 0) {
+    EnableInput(controller);
     this->_bFlyingToLocation = false;
     return;
   }
 
   // If we reached the end, set actual destination location and orientation
   if (this->_currentFlyTime >= this->FlyToDuration) {
+    EnableInput(controller);
     const glm::dvec3& finalPoint = _keypoints.back();
     this->SetECEFCameraLocation(finalPoint);
     GetController()->SetControlRotation(this->_flyToDestinationRotation);
