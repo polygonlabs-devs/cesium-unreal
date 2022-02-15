@@ -2,8 +2,10 @@
 
 #pragma once
 
+#include "Components/PrimitiveComponent.h"
 #include "Components/SceneComponent.h"
 #include "CoreMinimal.h"
+#include "CustomDepthParameters.h"
 #include "Interfaces/IHttpRequest.h"
 #include <glm/mat4x4.hpp>
 #include <memory>
@@ -36,14 +38,17 @@ struct FRasterOverlayTile {
   GENERATED_BODY()
 
   UPROPERTY()
-  UTexture2D* Texture;
+  FString OverlayName{};
 
-  FLinearColor TextureCoordinateRectangle;
-  FLinearColor TranslationAndScale;
+  UPROPERTY()
+  UTexture2D* Texture = nullptr;
+
+  FLinearColor TranslationAndScale{};
+  int32 TextureCoordinateID = -1;
 };
 
 UCLASS()
-class CESIUMRUNTIME_API UCesiumGltfComponent : public USceneComponent {
+class UCesiumGltfComponent : public USceneComponent {
   GENERATED_BODY()
 
 public:
@@ -63,7 +68,7 @@ public:
       const glm::dmat4x4& CesiumToUnrealTransform,
       UMaterialInterface* BaseMaterial,
       UMaterialInterface* BaseWaterMaterial,
-      UMaterialInterface* BaseOpacityMaterial);
+      FCustomDepthParameters CustomDepthParameters);
 
   UCesiumGltfComponent();
   virtual ~UCesiumGltfComponent();
@@ -74,8 +79,8 @@ public:
   UPROPERTY(EditAnywhere, Category = "Cesium")
   UMaterialInterface* BaseMaterialWithWater;
 
-  UPROPERTY(EditAnywhere, Category = "Cesium")
-  UMaterialInterface* OpacityMaskMaterial;
+  UPROPERTY(EditAnywhere, Category = "Rendering")
+  FCustomDepthParameters CustomDepthParameters;
 
   void UpdateTransformFromCesium(const glm::dmat4& CesiumToUnrealTransform);
 
@@ -83,23 +88,19 @@ public:
       const Cesium3DTilesSelection::Tile& Tile,
       const Cesium3DTilesSelection::RasterOverlayTile& RasterTile,
       UTexture2D* Texture,
-      const CesiumGeometry::Rectangle& TextureCoordinateRectangle,
       const glm::dvec2& Translation,
-      const glm::dvec2& Scale);
+      const glm::dvec2& Scale,
+      int32_t TextureCoordinateID);
 
   void DetachRasterTile(
       const Cesium3DTilesSelection::Tile& Tile,
       const Cesium3DTilesSelection::RasterOverlayTile& RasterTile,
-      UTexture2D* Texture,
-      const CesiumGeometry::Rectangle& TextureCoordinateRectangle);
+      UTexture2D* Texture);
 
   UFUNCTION(BlueprintCallable, Category = "Collision")
   virtual void SetCollisionEnabled(ECollisionEnabled::Type NewType);
 
-  virtual void FinishDestroy() override;
-
 private:
-  void UpdateRasterOverlays();
-
-  TArray<FRasterOverlayTile> OverlayTiles;
+  UPROPERTY()
+  UTexture2D* Transparent1x1;
 };

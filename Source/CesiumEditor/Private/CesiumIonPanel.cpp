@@ -13,7 +13,9 @@
 #include "Framework/MultiBox/MultiBoxBuilder.h"
 #include "IonLoginPanel.h"
 #include "IonQuickAddPanel.h"
+#include "SelectCesiumIonToken.h"
 #include "Styling/SlateStyleRegistry.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SHeader.h"
 #include "Widgets/Layout/SScrollBox.h"
@@ -32,9 +34,6 @@ CesiumIonPanel::CesiumIonPanel()
       _assetsUpdatedDelegateHandle(),
       _pListView(nullptr),
       _assets(),
-      _refreshInProgress(false),
-      _refreshNeeded(false),
-      _pDetails(nullptr),
       _pSelection(nullptr) {
   this->_connectionUpdatedDelegateHandle =
       FCesiumEditorModule::ion().ConnectionUpdated.AddRaw(
@@ -97,31 +96,65 @@ void CesiumIonPanel::Construct(const FArguments& InArgs) {
                       this,
                       &CesiumIonPanel::OnSortChange)));
 
-  this->_pDetails = this->AssetDetails();
+  TSharedPtr<SWidget> pDetails = this->AssetDetails();
 
-  ChildSlot
-      [SNew(SSplitter).Orientation(EOrientation::Orient_Horizontal) +
-       SSplitter::Slot().Value(0.66f)[
-           // Add the search bar at the upper right
-           SNew(SVerticalBox) +
-           SVerticalBox::Slot().AutoHeight()
-               [SNew(SUniformGridPanel).SlotPadding(FMargin(5.0f)) +
-                SUniformGridPanel::Slot(1, 0).HAlign(
-                    HAlign_Right)[SAssignNew(SearchBox, SSearchBox)
-                                      .OnTextChanged(
-                                          this,
-                                          &CesiumIonPanel::OnSearchTextChange)
-                                      .MinDesiredWidth(200.f)]] +
-           SVerticalBox::Slot()[this->_pListView.ToSharedRef()]] +
-       SSplitter::Slot().Value(
-           0.34f)[SNew(SBorder).Padding(10)
-                      [SNew(SVerticalBox) +
-                       SVerticalBox::Slot()[this->_pDetails.ToSharedRef()] +
-                       SVerticalBox::Slot()
-                           [SNew(STextBlock).Visibility_Lambda([this]() {
-                             return this->_pSelection ? EVisibility::Collapsed
-                                                      : EVisibility::Visible;
-                           })]]]];
+  // Create a splitter where the left shows the actual asset list
+  // (with the controls (search, refresh) on top), and the right
+  // shows the AssetDetails panel
+
+  // clang-format off
+  ChildSlot[
+    SNew(SSplitter).Orientation(EOrientation::Orient_Horizontal) +
+      SSplitter::Slot().Value(0.66f)
+        [
+          SNew(SVerticalBox) +
+            SVerticalBox::Slot().AutoHeight()
+            [
+              SNew(SHorizontalBox) +
+                // Add the refresh button at the upper left
+                SHorizontalBox::Slot().HAlign(HAlign_Left).Padding(5.0f)
+                [
+                  SNew(SButton)
+                    .ButtonStyle(FCesiumEditorModule::GetStyle(), "CesiumButton")
+                    .TextStyle(
+                      FCesiumEditorModule::GetStyle(), "CesiumButtonText")
+                    .ContentPadding(FMargin(1.0, 1.0))
+                    .HAlign(EHorizontalAlignment::HAlign_Center)
+                    .Text(FText::FromString(TEXT("Refresh")))
+                    .ToolTipText(FText::FromString(TEXT("Refresh the asset list")))
+                    .OnClicked_Lambda([this]() {
+                      FCesiumEditorModule::ion().refreshAssets();
+                      Refresh();
+                      return FReply::Handled();
+                    })
+                    [
+                      SNew(SImage).Image(
+                        FCesiumEditorModule::GetStyle()->GetBrush(
+                          TEXT("Cesium.Common.Refresh")))
+                    ]
+                ] +
+                // Add the search bar at the upper right
+                SHorizontalBox::Slot().HAlign(HAlign_Right).Padding(5.0f)
+                [
+                  SAssignNew(SearchBox, SSearchBox).OnTextChanged(
+                      this, &CesiumIonPanel::OnSearchTextChange)
+                    .MinDesiredWidth(200.f)
+                ]
+            ] +
+            SVerticalBox::Slot()
+            [
+              this->_pListView.ToSharedRef()
+            ]
+          ] +
+          SSplitter::Slot().Value(0.34f)
+          [
+            SNew(SBorder).Padding(10)
+            [
+              pDetails.ToSharedRef()
+            ]
+          ]
+        ];
+  // clang-format on
 
   FCesiumEditorModule::ion().refreshAssets();
 }
@@ -183,8 +216,12 @@ TSharedRef<SWidget> CesiumIonPanel::AssetDetails() {
                            .c_str()));
                  })] +
          SScrollBox::Slot().Padding(10).HAlign(
-             EHorizontalAlignment::HAlign_Fill)
+             EHorizontalAlignment::HAlign_Center)
              [SNew(SButton)
+                  .ButtonStyle(FCesiumEditorModule::GetStyle(), "CesiumButton")
+                  .TextStyle(
+                      FCesiumEditorModule::GetStyle(),
+                      "CesiumButtonText")
                   .Visibility_Lambda([this]() {
                     return isSupportedTileset(this->_pSelection)
                                ? EVisibility::Visible
@@ -197,8 +234,33 @@ TSharedRef<SWidget> CesiumIonPanel::AssetDetails() {
                     return FReply::Handled();
                   })] +
          SScrollBox::Slot().Padding(10).HAlign(
-             EHorizontalAlignment::HAlign_Fill)
+             EHorizontalAlignment::HAlign_Center)
              [SNew(SButton)
+                  .ButtonStyle(FCesiumEditorModule::GetStyle(), "CesiumButton")
+                  .TextStyle(
+                      FCesiumEditorModule::GetStyle(),
+                      "CesiumButtonText")
+                  .Visibility_Lambda([this]() {
+                    return isSupportedImagery(this->_pSelection)
+                               ? EVisibility::Visible
+                               : EVisibility::Collapsed;
+                  })
+                  .HAlign(EHorizontalAlignment::HAlign_Center)
+                  .Text(FText::FromString(
+                      TEXT("Use as Terrain Tileset Base Layer")))
+                  .ToolTipText(FText::FromString(TEXT(
+                      "Makes this asset the base overlay on the terrain tileset, underlying all others, by setting its MaterialLayerKey to 'Overlay0'. If the terrain tileset already has an 'Overlay0' it is removed. If no terrain tileset exists in the level, Cesium World Terrain is added.")))
+                  .OnClicked_Lambda([this]() {
+                    this->AddOverlayToTerrain(this->_pSelection, true);
+                    return FReply::Handled();
+                  })] +
+         SScrollBox::Slot().Padding(10).HAlign(
+             EHorizontalAlignment::HAlign_Center)
+             [SNew(SButton)
+                  .ButtonStyle(FCesiumEditorModule::GetStyle(), "CesiumButton")
+                  .TextStyle(
+                      FCesiumEditorModule::GetStyle(),
+                      "CesiumButtonText")
                   .Visibility_Lambda([this]() {
                     return isSupportedImagery(this->_pSelection)
                                ? EVisibility::Visible
@@ -206,13 +268,19 @@ TSharedRef<SWidget> CesiumIonPanel::AssetDetails() {
                   })
                   .HAlign(EHorizontalAlignment::HAlign_Center)
                   .Text(FText::FromString(TEXT("Drape Over Terrain Tileset")))
+                  .ToolTipText(FText::FromString(TEXT(
+                      "Adds this asset to any existing overlays on the terrain tileset by assigning it the first unused 'OverlayN` MaterialLayerKey. If no terrain tileset exists in the level, Cesium World Terrain is added.")))
                   .OnClicked_Lambda([this]() {
-                    this->AddOverlayToTerrain(this->_pSelection);
+                    this->AddOverlayToTerrain(this->_pSelection, false);
                     return FReply::Handled();
                   })] +
          SScrollBox::Slot().Padding(10).HAlign(
-             EHorizontalAlignment::HAlign_Fill)
+             EHorizontalAlignment::HAlign_Center)
              [SNew(SButton)
+                  .ButtonStyle(FCesiumEditorModule::GetStyle(), "CesiumButton")
+                  .TextStyle(
+                      FCesiumEditorModule::GetStyle(),
+                      "CesiumButtonText")
                   .Visibility_Lambda([this]() {
                     return !isSupportedTileset(this->_pSelection) &&
                                    !isSupportedImagery(this->_pSelection)
@@ -363,7 +431,8 @@ void CesiumIonPanel::AssetSelected(
 void CesiumIonPanel::AddAsset(TSharedPtr<CesiumIonClient::Asset> item) {
 
   if (isSupportedImagery(item)) {
-    this->AddOverlayToTerrain(item);
+    // Don't add imagery on double-click, because we don't know if we should
+    // replace the base layer or add a new layer.
   } else if (isSupportedTileset(item)) {
     this->AddAssetToLevel(item);
   } else {
@@ -376,44 +445,51 @@ void CesiumIonPanel::AddAsset(TSharedPtr<CesiumIonClient::Asset> item) {
 }
 
 void CesiumIonPanel::AddAssetToLevel(TSharedPtr<CesiumIonClient::Asset> item) {
-  UWorld* pCurrentWorld = GEditor->GetEditorWorldContext().World();
-  ULevel* pCurrentLevel = pCurrentWorld->GetCurrentLevel();
-
-  AActor* pNewActor = GEditor->AddActor(
-      pCurrentLevel,
-      ACesium3DTileset::StaticClass(),
-      FTransform(),
-      false,
-      RF_Public | RF_Transactional);
-  ACesium3DTileset* pTileset = Cast<ACesium3DTileset>(pNewActor);
-  pTileset->SetActorLabel(UTF8_TO_TCHAR(item->name.c_str()));
-  pTileset->SetIonAssetID(item->id);
-  pTileset->SetIonAccessToken(UTF8_TO_TCHAR(
-      FCesiumEditorModule::ion().getAssetAccessToken().token.c_str()));
-
-  pTileset->RerunConstructionScripts();
+  SelectCesiumIonToken::SelectAndAuthorizeToken({item->id})
+      .thenInMainThread([item](const std::optional<Token>& /*maybeToken*/) {
+        // If token selection was canceled, or if an error occurred while
+        // selecting the token, ignore it and create the tileset anyway. It's
+        // already been logged if necessary, and we can let the user sort out
+        // the problem using the resulting Troubleshooting panel.
+        ACesium3DTileset* pTileset =
+            FCesiumEditorModule::CreateTileset(item->name, item->id);
+        if (pTileset) {
+          pTileset->RerunConstructionScripts();
+        }
+      });
 }
 
 void CesiumIonPanel::AddOverlayToTerrain(
-    TSharedPtr<CesiumIonClient::Asset> item) {
-  UWorld* pCurrentWorld = GEditor->GetEditorWorldContext().World();
-  ULevel* pCurrentLevel = pCurrentWorld->GetCurrentLevel();
+    TSharedPtr<CesiumIonClient::Asset> item,
+    bool useAsBaseLayer) {
+  SelectCesiumIonToken::SelectAndAuthorizeToken({item->id})
+      .thenInMainThread([useAsBaseLayer, item](const std::optional<Token>&) {
+        UWorld* pCurrentWorld = GEditor->GetEditorWorldContext().World();
+        ULevel* pCurrentLevel = pCurrentWorld->GetCurrentLevel();
 
-  ACesium3DTileset* pTilesetActor =
-      FCesiumEditorModule::FindFirstTilesetSupportingOverlays();
-  if (!pTilesetActor) {
-    pTilesetActor =
-        FCesiumEditorModule::CreateTileset("Cesium World Terrain", 1);
-  }
+        ACesium3DTileset* pTilesetActor =
+            FCesiumEditorModule::FindFirstTilesetSupportingOverlays();
+        if (!pTilesetActor) {
+          pTilesetActor =
+              FCesiumEditorModule::CreateTileset("Cesium World Terrain", 1);
+        }
 
-  UCesiumRasterOverlay* pOverlay =
-      FCesiumEditorModule::AddOverlay(pTilesetActor, item->name, item->id);
+        UCesiumRasterOverlay* pOverlay =
+            useAsBaseLayer ? FCesiumEditorModule::AddBaseOverlay(
+                                 pTilesetActor,
+                                 item->name,
+                                 item->id)
+                           : FCesiumEditorModule::AddOverlay(
+                                 pTilesetActor,
+                                 item->name,
+                                 item->id);
 
-  pTilesetActor->RerunConstructionScripts();
+        pTilesetActor->RerunConstructionScripts();
 
-  GEditor->SelectNone(true, false);
-  GEditor->SelectActor(pTilesetActor, true, true, true, true);
-  GEditor->SelectComponent(pOverlay, true, true, true);
+        GEditor->SelectNone(true, false);
+        GEditor->SelectActor(pTilesetActor, true, true, true, true);
+        GEditor->SelectComponent(pOverlay, true, true, true);
+      });
 }
 
 namespace {

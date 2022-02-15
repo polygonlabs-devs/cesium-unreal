@@ -9,8 +9,8 @@
 
 /**
  * A raster overlay that directly accesses a Tile Map Service (TMS) server. If
- * you're using Bing Maps via Cesium ion, use the "Cesium ion Raster Overlay"
- * component instead.
+ * you're using a Tile Map Service via Cesium ion, use the "Cesium ion Raster
+ * Overlay" component instead.
  */
 UCLASS(ClassGroup = (Cesium), meta = (BlueprintSpawnableComponent))
 class CESIUMRUNTIME_API UCesiumTileMapServiceRasterOverlay
@@ -21,7 +21,7 @@ public:
   /**
    * The base URL of the Tile Map Service (TMS).
    */
-  UPROPERTY(EditAnywhere, Category = "Cesium")
+  UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cesium")
   FString Url;
 
   /**
@@ -29,7 +29,7 @@ public:
    * server, or false to automatically determine the minimum and maximum zoom
    * levels from the server's tilemapresource.xml file.
    */
-  UPROPERTY(EditAnywhere, Category = "Cesium")
+  UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cesium")
   bool bSpecifyZoomLevels = false;
 
   /**
@@ -37,6 +37,7 @@ public:
    */
   UPROPERTY(
       EditAnywhere,
+      BlueprintReadWrite,
       Category = "Cesium",
       meta = (EditCondition = "bSpecifyZoomLevels", ClampMin = 0))
   int32 MinimumLevel = 0;
@@ -46,11 +47,13 @@ public:
    */
   UPROPERTY(
       EditAnywhere,
+      BlueprintReadWrite,
       Category = "Cesium",
       meta = (EditCondition = "bSpecifyZoomLevels", ClampMin = 0))
   int32 MaximumLevel = 10;
 
 protected:
-  virtual std::unique_ptr<Cesium3DTilesSelection::RasterOverlay>
-  CreateOverlay() override;
+  virtual std::unique_ptr<Cesium3DTilesSelection::RasterOverlay> CreateOverlay(
+      const Cesium3DTilesSelection::RasterOverlayOptions& options = {})
+      override;
 };
