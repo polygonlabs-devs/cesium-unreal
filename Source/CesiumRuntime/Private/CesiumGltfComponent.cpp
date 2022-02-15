@@ -2,15 +2,15 @@
 
 #include "CesiumGltfComponent.h"
 #include "Async/Async.h"
+#include "Cesium3DTilesSelection/GltfContent.h"
 #include "Cesium3DTilesSelection/RasterOverlay.h"
 #include "Cesium3DTilesSelection/RasterOverlayTile.h"
 #include "CesiumGeometry/Axis.h"
 #include "CesiumGeometry/AxisTransforms.h"
 #include "CesiumGeometry/Rectangle.h"
 #include "CesiumGltf/AccessorView.h"
-#include "CesiumGltf/GltfReader.h"
-#include "CesiumGltf/MeshPrimitiveEXT_feature_metadata.h"
-#include "CesiumGltf/ModelEXT_feature_metadata.h"
+#include "CesiumGltf/ExtensionMeshPrimitiveExtFeatureMetadata.h"
+#include "CesiumGltf/ExtensionModelExtFeatureMetadata.h"
 #include "CesiumGltf/TextureInfo.h"
 #include "CesiumGltfPrimitiveComponent.h"
 #include "CesiumMaterialUserData.h"
@@ -30,6 +30,7 @@
 #include "MeshTypes.h"
 #include "PhysicsEngine/BodySetup.h"
 #include "PixelFormat.h"
+#include "Runtime/Launch/Resources/Version.h"
 #include "StaticMeshOperations.h"
 #include "StaticMeshResources.h"
 #include "UObject/ConstructorHelpers.h"
@@ -57,36 +58,36 @@ using namespace CesiumGltf;
 static uint32_t nextMaterialId = 0;
 
 struct LoadModelResult {
-  FCesiumMetadataPrimitive Metadata;
-  FStaticMeshRenderData* RenderData;
-  const CesiumGltf::Model* pModel;
-  const CesiumGltf::MeshPrimitive* pMeshPrimitive;
-  const CesiumGltf::Material* pMaterial;
-  glm::dmat4x4 transform;
+  FCesiumMetadataPrimitive Metadata{};
+  FStaticMeshRenderData* RenderData = nullptr;
+  const CesiumGltf::Model* pModel = nullptr;
+  const CesiumGltf::MeshPrimitive* pMeshPrimitive = nullptr;
+  const CesiumGltf::Material* pMaterial = nullptr;
+  glm::dmat4x4 transform{1.0};
 #if PHYSICS_INTERFACE_PHYSX
-  PxTriangleMesh* pCollisionMesh;
+  PxTriangleMesh* pCollisionMesh = nullptr;
 #else
   TSharedPtr<Chaos::FTriangleMeshImplicitObject, ESPMode::ThreadSafe>
-      pCollisionMesh;
+      pCollisionMesh = nullptr;
 #endif
-  std::string name;
+  std::string name{};
 
-  CesiumTextureUtility::LoadedTextureResult* baseColorTexture;
-  CesiumTextureUtility::LoadedTextureResult* metallicRoughnessTexture;
-  CesiumTextureUtility::LoadedTextureResult* normalTexture;
-  CesiumTextureUtility::LoadedTextureResult* emissiveTexture;
-  CesiumTextureUtility::LoadedTextureResult* occlusionTexture;
-  CesiumTextureUtility::LoadedTextureResult* waterMaskTexture;
+  CesiumTextureUtility::LoadedTextureResult* baseColorTexture = nullptr;
+  CesiumTextureUtility::LoadedTextureResult* metallicRoughnessTexture = nullptr;
+  CesiumTextureUtility::LoadedTextureResult* normalTexture = nullptr;
+  CesiumTextureUtility::LoadedTextureResult* emissiveTexture = nullptr;
+  CesiumTextureUtility::LoadedTextureResult* occlusionTexture = nullptr;
+  CesiumTextureUtility::LoadedTextureResult* waterMaskTexture = nullptr;
   std::unordered_map<std::string, uint32_t> textureCoordinateParameters;
 
-  bool onlyLand;
-  bool onlyWater;
+  bool onlyLand = true;
+  bool onlyWater = false;
 
-  double waterMaskTranslationX;
-  double waterMaskTranslationY;
-  double waterMaskScale;
+  double waterMaskTranslationX = 0.0;
+  double waterMaskTranslationY = 0.0;
+  double waterMaskScale = 1.0;
 
-  OverlayTextureCoordinateIDMap overlayTextureCoordinateIDToUVIndex;
+  OverlayTextureCoordinateIDMap overlayTextureCoordinateIDToUVIndex{};
 };
 
 template <class... T> struct IsAccessorView;
@@ -446,14 +447,15 @@ static void applyWaterMask(
 static FCesiumMetadataPrimitive loadMetadataPrimitive(
     const CesiumGltf::Model& model,
     const CesiumGltf::MeshPrimitive& primitive) {
-  const CesiumGltf::ModelEXT_feature_metadata* metadata =
-      model.getExtension<CesiumGltf::ModelEXT_feature_metadata>();
+  const CesiumGltf::ExtensionModelExtFeatureMetadata* metadata =
+      model.getExtension<CesiumGltf::ExtensionModelExtFeatureMetadata>();
   if (!metadata) {
     return FCesiumMetadataPrimitive();
   }
 
-  const CesiumGltf::MeshPrimitiveEXT_feature_metadata* primitiveMetadata =
-      primitive.getExtension<CesiumGltf::MeshPrimitiveEXT_feature_metadata>();
+  const CesiumGltf::ExtensionMeshPrimitiveExtFeatureMetadata*
+      primitiveMetadata = primitive.getExtension<
+          CesiumGltf::ExtensionMeshPrimitiveExtFeatureMetadata>();
   if (!primitiveMetadata) {
     return FCesiumMetadataPrimitive();
   }
@@ -740,12 +742,6 @@ static void loadPrimitive(
   StaticMeshBuildVertices.SetNum(
       duplicateVertices ? indices.Num() : positionView.size());
 
-  // The static mesh we construct will _not_ be indexed, even if the incoming
-  // glTF is. This allows us to compute flat normals if the glTF doesn't include
-  // them already, and it allows us to compute a correct tangent space basis
-  // according to the MikkTSpace algorithm when tangents are not included in the
-  // glTF.
-
   {
     if (duplicateVertices) {
       CESIUM_TRACE("copy duplicated positions");
@@ -771,63 +767,6 @@ static void loadPrimitive(
             RenderData->Bounds.SphereRadius);
       }
     }
-  }
-
-  // TangentX: Tangent
-  // TangentY: Bi-tangent
-  // TangentZ: Normal
-
-  if (hasNormals) {
-    if (duplicateVertices) {
-      CESIUM_TRACE("copy normals for duplicated vertices");
-      for (int64_t i = 0; i < indices.Num(); ++i) {
-        FStaticMeshBuildVertex& vertex = StaticMeshBuildVertices[i];
-        uint32 vertexIndex = indices[i];
-        vertex.TangentX = FVector(0.0f, 0.0f, 0.0f);
-        vertex.TangentY = FVector(0.0f, 0.0f, 0.0f);
-        vertex.TangentZ = normalAccessor[vertexIndex];
-      }
-    } else {
-      CESIUM_TRACE("copy normals");
-      for (int64_t i = 0; i < StaticMeshBuildVertices.Num(); ++i) {
-        FStaticMeshBuildVertex& vertex = StaticMeshBuildVertices[i];
-        vertex.TangentX = FVector(0.0f, 0.0f, 0.0f);
-        vertex.TangentY = FVector(0.0f, 0.0f, 0.0f);
-        vertex.TangentZ = normalAccessor[i];
-      }
-    }
-  } else {
-    CESIUM_TRACE("compute flat normals");
-    computeFlatNormals(indices, StaticMeshBuildVertices);
-  }
-
-  if (hasTangents) {
-    if (duplicateVertices) {
-      CESIUM_TRACE("copy tangents for duplicated vertices");
-      for (int64_t i = 0; i < indices.Num(); ++i) {
-        FStaticMeshBuildVertex& vertex = StaticMeshBuildVertices[i];
-        uint32 vertexIndex = indices[i];
-        const FVector4& tangent = tangentAccessor[vertexIndex];
-        vertex.TangentX = tangent;
-        vertex.TangentY =
-            FVector::CrossProduct(vertex.TangentZ, vertex.TangentX) * tangent.W;
-      }
-    } else {
-      CESIUM_TRACE("copy tangents");
-      for (int64_t i = 0; i < StaticMeshBuildVertices.Num(); ++i) {
-        FStaticMeshBuildVertex& vertex = StaticMeshBuildVertices[i];
-        const FVector4& tangent = tangentAccessor[i];
-        vertex.TangentX = tangent;
-        vertex.TangentY =
-            FVector::CrossProduct(vertex.TangentZ, vertex.TangentX) * tangent.W;
-      }
-    }
-  }
-
-  if (needsTangents && !hasTangents) {
-    // Use mikktspace to calculate the tangents
-    CESIUM_TRACE("compute tangents");
-    computeTangentSpace(StaticMeshBuildVertices);
   }
 
   bool hasVertexColors = false;
@@ -933,6 +872,64 @@ static void loadPrimitive(
         primitiveResult.overlayTextureCoordinateIDToUVIndex[i] = 0;
       }
     }
+  }
+
+  // TangentX: Tangent
+  // TangentY: Bi-tangent
+  // TangentZ: Normal
+
+  if (hasNormals) {
+    if (duplicateVertices) {
+      CESIUM_TRACE("copy normals for duplicated vertices");
+      for (int64_t i = 0; i < indices.Num(); ++i) {
+        FStaticMeshBuildVertex& vertex = StaticMeshBuildVertices[i];
+        uint32 vertexIndex = indices[i];
+        vertex.TangentX = FVector(0.0f, 0.0f, 0.0f);
+        vertex.TangentY = FVector(0.0f, 0.0f, 0.0f);
+        vertex.TangentZ = normalAccessor[vertexIndex];
+      }
+    } else {
+      CESIUM_TRACE("copy normals");
+      for (int64_t i = 0; i < StaticMeshBuildVertices.Num(); ++i) {
+        FStaticMeshBuildVertex& vertex = StaticMeshBuildVertices[i];
+        vertex.TangentX = FVector(0.0f, 0.0f, 0.0f);
+        vertex.TangentY = FVector(0.0f, 0.0f, 0.0f);
+        vertex.TangentZ = normalAccessor[i];
+      }
+    }
+  } else {
+    CESIUM_TRACE("compute flat normals");
+    computeFlatNormals(indices, StaticMeshBuildVertices);
+  }
+
+  if (hasTangents) {
+    if (duplicateVertices) {
+      CESIUM_TRACE("copy tangents for duplicated vertices");
+      for (int64_t i = 0; i < indices.Num(); ++i) {
+        FStaticMeshBuildVertex& vertex = StaticMeshBuildVertices[i];
+        uint32 vertexIndex = indices[i];
+        const FVector4& tangent = tangentAccessor[vertexIndex];
+        vertex.TangentX = tangent;
+        vertex.TangentY =
+            FVector::CrossProduct(vertex.TangentZ, vertex.TangentX) * tangent.W;
+      }
+    } else {
+      CESIUM_TRACE("copy tangents");
+      for (int64_t i = 0; i < StaticMeshBuildVertices.Num(); ++i) {
+        FStaticMeshBuildVertex& vertex = StaticMeshBuildVertices[i];
+        const FVector4& tangent = tangentAccessor[i];
+        vertex.TangentX = tangent;
+        vertex.TangentY =
+            FVector::CrossProduct(vertex.TangentZ, vertex.TangentX) * tangent.W;
+      }
+    }
+  }
+
+  if (needsTangents && !hasTangents) {
+    // Use mikktspace to calculate the tangents.
+    // Note that this assumes normals and UVs are already populated.
+    CESIUM_TRACE("compute tangents");
+    computeTangentSpace(StaticMeshBuildVertices);
   }
 
   {
@@ -1292,53 +1289,6 @@ static void loadNode(
 
 namespace {
 /**
- * @brief Apply the transform for the `RTC_CENTER`
- *
- * If the B3DM that contained the given model had an `RTC_CENTER` in its
- * Feature Table, then it was stored in the `extras` property of the glTF
- * model, as a 3-element array under the name `RTC_CENTER`.
- *
- * This function will multiply the given matrix with the (translation) matrix
- * that was created from this `RTC_CENTER` property in the `extras` of the
- * given model. If the given model does not have this property, then nothing
- * will be done.
- *
- * @param model The glTF model
- * @param rootTransform The matrix that will be multiplied with the transform
- */
-void applyRtcCenter(
-    const CesiumGltf::Model& model,
-    glm::dmat4x4& rootTransform) {
-  auto rtcCenterIt = model.extras.find("RTC_CENTER");
-  if (rtcCenterIt == model.extras.end()) {
-    return;
-  }
-  const CesiumUtility::JsonValue& rtcCenter = rtcCenterIt->second;
-  const std::vector<CesiumUtility::JsonValue>* pArray =
-      std::get_if<CesiumUtility::JsonValue::Array>(&rtcCenter.value);
-  if (!pArray) {
-    return;
-  }
-  if (pArray->size() != 3) {
-    UE_LOG(
-        LogCesium,
-        Warning,
-        TEXT("The RTC_CENTER must have a size of 3, but has {}"),
-        pArray->size());
-    return;
-  }
-  const double x = (*pArray)[0].getSafeNumberOrDefault(0.0);
-  const double y = (*pArray)[1].getSafeNumberOrDefault(0.0);
-  const double z = (*pArray)[2].getSafeNumberOrDefault(0.0);
-  const glm::dmat4x4 rtcTransform(
-      glm::dvec4(1.0, 0.0, 0.0, 0.0),
-      glm::dvec4(0.0, 1.0, 0.0, 0.0),
-      glm::dvec4(0.0, 0.0, 1.0, 0.0),
-      glm::dvec4(x, y, z, 1.0));
-  rootTransform *= rtcTransform;
-}
-
-/**
  * @brief Apply the transform so that the up-axis of the given model is the
  * Z-axis.
  *
@@ -1397,7 +1347,9 @@ static std::vector<LoadModelResult> loadModelAnyThreadPart(
 
   {
     CESIUM_TRACE("Apply transforms");
-    applyRtcCenter(model, rootTransform);
+    rootTransform = Cesium3DTilesSelection::GltfContent::applyRtcCenter(
+        model,
+        rootTransform);
     applyGltfUpAxisTransform(model, rootTransform);
   }
 
@@ -1564,6 +1516,11 @@ static void loadModelGameThreadPart(
   pMesh->Metadata = std::move(loadResult.Metadata);
   pMesh->pModel = loadResult.pModel;
   pMesh->pMeshPrimitive = loadResult.pMeshPrimitive;
+  pMesh->SetRenderCustomDepth(pGltf->CustomDepthParameters.RenderCustomDepth);
+  pMesh->SetCustomDepthStencilWriteMask(
+      pGltf->CustomDepthParameters.CustomDepthStencilWriteMask);
+  pMesh->SetCustomDepthStencilValue(
+      pGltf->CustomDepthParameters.CustomDepthStencilValue);
 
   UStaticMesh* pStaticMesh = NewObject<UStaticMesh>(pMesh, meshName);
   pMesh->SetStaticMesh(pStaticMesh);
@@ -1745,7 +1702,8 @@ UCesiumGltfComponent::CreateOffGameThread(
     std::unique_ptr<HalfConstructed> pHalfConstructed,
     const glm::dmat4x4& cesiumToUnrealTransform,
     UMaterialInterface* pBaseMaterial,
-    UMaterialInterface* pBaseWaterMaterial) {
+    UMaterialInterface* pBaseWaterMaterial,
+    FCustomDepthParameters CustomDepthParameters) {
   HalfConstructedReal* pReal =
       static_cast<HalfConstructedReal*>(pHalfConstructed.get());
   std::vector<LoadModelResult>& result = pReal->loadModelResult;
@@ -1764,6 +1722,8 @@ UCesiumGltfComponent::CreateOffGameThread(
   if (pBaseWaterMaterial) {
     Gltf->BaseMaterialWithWater = pBaseWaterMaterial;
   }
+
+  Gltf->CustomDepthParameters = CustomDepthParameters;
 
   for (LoadModelResult& model : result) {
     loadModelGameThreadPart(Gltf, model, cesiumToUnrealTransform);
@@ -1964,11 +1924,6 @@ void UCesiumGltfComponent::SetCollisionEnabled(
       pPrimitive->SetCollisionEnabled(NewType);
     }
   }
-}
-
-void UCesiumGltfComponent::FinishDestroy() {
-  UE_LOG(LogCesium, VeryVerbose, TEXT("UCesiumGltfComponent::FinishDestroy"));
-  Super::FinishDestroy();
 }
 
 #if !PHYSICS_INTERFACE_PHYSX

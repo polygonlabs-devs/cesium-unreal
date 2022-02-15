@@ -4,27 +4,39 @@
 
 #include "Cesium3DTilesSelection/ViewState.h"
 #include "Cesium3DTilesSelection/ViewUpdateResult.h"
+#include "Cesium3DTilesetLoadFailureDetails.h"
 #include "CesiumCreditSystem.h"
 #include "CesiumExclusionZone.h"
 #include "CesiumGeoreference.h"
-#include "CesiumGeoreferenceable.h"
 #include "CoreMinimal.h"
+#include "CustomDepthParameters.h"
 #include "GameFramework/Actor.h"
 #include "Interfaces/IHttpRequest.h"
 #include <PhysicsEngine/BodyInstance.h>
 #include <chrono>
 #include <glm/mat4x4.hpp>
 #include <vector>
-
 #include "Cesium3DTileset.generated.h"
 
 class UMaterialInterface;
 class ACesiumCartographicSelection;
+struct FCesiumCamera;
 
 namespace Cesium3DTilesSelection {
 class Tileset;
 class TilesetView;
 } // namespace Cesium3DTilesSelection
+
+/**
+ * The delegate for OnCesium3DTilesetLoadFailure, which is triggered when
+ * the tileset encounters a load error.
+ */
+DECLARE_MULTICAST_DELEGATE_OneParam(
+    FCesium3DTilesetLoadFailure,
+    const FCesium3DTilesetLoadFailureDetails&);
+
+CESIUMRUNTIME_API extern FCesium3DTilesetLoadFailure
+    OnCesium3DTilesetLoadFailure;
 
 UENUM(BlueprintType)
 enum class ETilesetSource : uint8 {
@@ -41,26 +53,131 @@ enum class ETilesetSource : uint8 {
 };
 
 UCLASS()
-class CESIUMRUNTIME_API ACesium3DTileset : public AActor,
-                                           public ICesiumGeoreferenceable {
+class CESIUMRUNTIME_API ACesium3DTileset : public AActor {
   GENERATED_BODY()
 
 public:
   ACesium3DTileset();
   virtual ~ACesium3DTileset();
 
+private:
   /**
-   * The actor controlling how this tileset's coordinate system relates to the
-   * coordinate system in this Unreal Engine level.
+   * The designated georeference actor controlling how the actor's
+   * coordinate system relates to the coordinate system in this Unreal Engine
+   * level.
+   *
+   * If this is null, the Tileset will find and use the first Georeference
+   * Actor in the level, or create one if necessary. To get the active/effective
+   * Georeference from Blueprints or C++, use ResolvedGeoreference instead.
    */
-  UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cesium")
+  UPROPERTY(
+      EditAnywhere,
+      BlueprintReadWrite,
+      BlueprintGetter = GetGeoreference,
+      BlueprintSetter = SetGeoreference,
+      Category = "Cesium",
+      Meta = (AllowPrivateAccess))
   ACesiumGeoreference* Georeference;
 
   /**
-   * The actor managing this tileset's content attributions.
+   * The resolved georeference used by this Tileset. This is not serialized
+   * because it may point to a Georeference in the PersistentLevel while this
+   * tileset is in a sublevel. If the Georeference property is specified,
+   * however then this property will have the same value.
+   *
+   * This property will be null before ResolveGeoreference is called.
    */
-  UPROPERTY(EditAnywhere, Category = "Cesium")
+  UPROPERTY(
+      Transient,
+      BlueprintReadOnly,
+      Category = "Cesium",
+      Meta = (AllowPrivateAccess))
+  ACesiumGeoreference* ResolvedGeoreference = nullptr;
+
+public:
+  /** @copydoc ACesium3DTileset::Georeference */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  ACesiumGeoreference* GetGeoreference() const;
+
+  /** @copydoc ACesium3DTileset::Georeference */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  void SetGeoreference(ACesiumGeoreference* NewGeoreference);
+
+  /**
+   * Resolves the Cesium Georeference to use with this Actor. Returns
+   * the value of the Georeference property if it is set. Otherwise, finds a
+   * Georeference in the World and returns it, creating it if necessary. The
+   * resolved Georeference is cached so subsequent calls to this function will
+   * return the same instance.
+   */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  ACesiumGeoreference* ResolveGeoreference();
+
+  /**
+   * Invalidates the cached resolved georeference, unsubscribing from it and
+   * setting it to null. The next time ResolveGeoreference is called, the
+   * Georeference will be re-resolved and re-subscribed.
+   */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  void InvalidateResolvedGeoreference();
+
+private:
+  /**
+   * The actor managing this tileset's content attributions.
+   *
+   * If this is null, the Tileset will find and use the first Credit System
+   * Actor in the level, or create one if necessary. To get the active/effective
+   * Credit System from Blueprints or C++, use ResolvedCreditSystem instead.
+   */
+  UPROPERTY(
+      EditAnywhere,
+      BlueprintReadWrite,
+      BlueprintGetter = GetCreditSystem,
+      BlueprintSetter = SetCreditSystem,
+      Category = "Cesium",
+      Meta = (AllowPrivateAccess))
   ACesiumCreditSystem* CreditSystem;
+
+  /**
+   * The resolved Credit System used by this Tileset. This is not serialized
+   * because it may point to a Credit System in the PersistentLevel while this
+   * tileset is in a sublevel. If the CreditSystem property is specified,
+   * however then this property will have the same value.
+   *
+   * This property will be null before ResolveCreditSystem is called.
+   */
+  UPROPERTY(
+      Transient,
+      BlueprintReadOnly,
+      Category = "Cesium",
+      Meta = (AllowPrivateAccess))
+  ACesiumCreditSystem* ResolvedCreditSystem = nullptr;
+
+public:
+  /** @copydoc ACesium3DTileset::CreditSystem */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  ACesiumCreditSystem* GetCreditSystem() const;
+
+  /** @copydoc ACesium3DTileset::CreditSystem */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  void SetCreditSystem(ACesiumCreditSystem* NewCreditSystem);
+
+  /**
+   * Resolves the Cesium Credit System to use with this Actor. Returns
+   * the value of the CreditSystem property if it is set. Otherwise, finds a
+   * Credit System in the World and returns it, creating it if necessary. The
+   * resolved Credit System is cached so subsequent calls to this function will
+   * return the same instance.
+   */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  ACesiumCreditSystem* ResolveCreditSystem();
+
+  /**
+   * Invalidates the cached resolved Credit System, setting it to null. The next
+   * time ResolveCreditSystem is called, the Credit System will be re-resolved.
+   */
+  UFUNCTION(BlueprintCallable, Category = "Cesium")
+  void InvalidateResolvedCreditSystem();
 
   /**
    * The maximum number of pixels of error when rendering this tileset.
@@ -131,6 +248,18 @@ public:
       Category = "Cesium|Tile Loading",
       meta = (ClampMin = 0))
   int32 MaximumSimultaneousTileLoads = 20;
+
+  /**
+   * @brief The maximum number of bytes that may be cached.
+   *
+   * Note that this value, even if 0, will never
+   * cause tiles that are needed for rendering to be unloaded. However, if the
+   * total number of loaded bytes is greater than this value, tiles will be
+   * unloaded until the total is under this number or until only required tiles
+   * remain, whichever comes first.
+   */
+  UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Cesium|Tile Loading")
+  int64 MaximumCachedBytes = 256 * 1024 * 1024;
 
   /**
    * The number of loading descendents a tile should allow before deciding to
@@ -266,6 +395,12 @@ public:
   bool UpdateInEditor = true;
 
   /**
+   * If true, stats about tile selection are printed to the Output Log.
+   */
+  UPROPERTY(EditAnywhere, Category = "Cesium|Debug")
+  bool LogSelectionStats = false;
+
+  /**
    * Define the collision profile for all the 3D tiles created inside this
    * actor.
    */
@@ -314,7 +449,7 @@ private:
       meta =
           (EditCondition = "TilesetSource==ETilesetSource::FromCesiumIon",
            ClampMin = 0))
-  int32 IonAssetID;
+  int64 IonAssetID;
 
   /**
    * The access token to use to access the Cesium ion resource.
@@ -326,6 +461,13 @@ private:
       Category = "Cesium",
       meta = (EditCondition = "TilesetSource==ETilesetSource::FromCesiumIon"))
   FString IonAccessToken;
+
+  /**
+   * Check if the Cesium ion token used to access this tileset is working
+   * correctly, and fix it if necessary.
+   */
+  UFUNCTION(CallInEditor, Category = "Cesium")
+  void TroubleshootToken();
 
   /**
    * Whether to generate physics meshes for this tileset.
@@ -425,6 +567,14 @@ private:
       Category = "Cesium|Rendering")
   UMaterialInterface* WaterMaterial = nullptr;
 
+  UPROPERTY(
+      EditAnywhere,
+      BlueprintGetter = GetCustomDepthParameters,
+      BlueprintSetter = SetCustomDepthParameters,
+      Category = "Rendering",
+      meta = (ShowOnlyInnerProperties))
+  FCustomDepthParameters CustomDepthParameters;
+
 protected:
   UPROPERTY()
   FString PlatformName;
@@ -443,10 +593,10 @@ public:
   void SetUrl(FString InUrl);
 
   UFUNCTION(BlueprintGetter, Category = "Cesium")
-  int32 GetIonAssetID() const { return IonAssetID; }
+  int64 GetIonAssetID() const { return IonAssetID; }
 
   UFUNCTION(BlueprintSetter, Category = "Cesium")
-  void SetIonAssetID(int32 InAssetID);
+  void SetIonAssetID(int64 InAssetID);
 
   UFUNCTION(BlueprintGetter, Category = "Cesium")
   FString GetIonAccessToken() const { return IonAccessToken; }
@@ -490,6 +640,14 @@ public:
   UFUNCTION(BlueprintSetter, Category = "Cesium|Rendering")
   void SetWaterMaterial(UMaterialInterface* InMaterial);
 
+  UFUNCTION(BlueprintGetter, Category = "Rendering")
+  FCustomDepthParameters GetCustomDepthParameters() const {
+    return CustomDepthParameters;
+  }
+
+  UFUNCTION(BlueprintSetter, Category = "Rendering")
+  void SetCustomDepthParameters(FCustomDepthParameters InCustomDepthParameters);
+
   UFUNCTION(BlueprintCallable, Category = "Cesium|Rendering")
   void PlayMovieSequencer();
 
@@ -499,6 +657,13 @@ public:
   UFUNCTION(BlueprintCallable, Category = "Cesium|Rendering")
   void PauseMovieSequencer();
 
+  /**
+   * This method is not supposed to be called by clients. It is currently
+   * only required by the UnrealResourcePreparer.
+   *
+   * See {@link
+   * Cesium3DTilesetRoot::GetCesiumTilesetToUnrealRelativeWorldTransform}.
+   */
   const glm::dmat4& GetCesiumTilesetToUnrealRelativeWorldTransform() const;
 
   Cesium3DTilesSelection::Tileset* GetTileset() { return this->_pTileset; }
@@ -506,15 +671,7 @@ public:
     return this->_pTileset;
   }
 
-  void UpdateTransformFromCesium(const glm::dmat4& CesiumToUnreal);
-
-  // ICesiumGeoreferenceable implementation
-  virtual bool IsBoundingVolumeReady() const override;
-  virtual std::optional<Cesium3DTilesSelection::BoundingVolume>
-  GetBoundingVolume() const override;
-  virtual void NotifyGeoreferenceUpdated();
-
-  // AActor overrides
+  // AActor overrides (some or most of them should be protected)
   virtual bool ShouldTickIfViewportsOnly() const override;
   virtual void Tick(float DeltaTime) override;
   virtual void BeginDestroy() override;
@@ -540,7 +697,7 @@ protected:
    * Called after the C++ constructor and after the properties have
    * been initialized, including those loaded from config.
    */
-  virtual void PostInitProperties() override;
+  void PostInitProperties() override;
 
   virtual void NotifyHit(
       class UPrimitiveComponent* MyComp,
@@ -556,21 +713,25 @@ private:
   void LoadTileset();
   void DestroyTileset();
 
-  struct UnrealCameraParameters {
-    FVector2D viewportSize;
-    FVector location;
-    FRotator rotation;
-    double fieldOfViewDegrees;
-  };
-
   static Cesium3DTilesSelection::ViewState CreateViewStateFromViewParameters(
-      const UnrealCameraParameters& camera,
+      const FCesiumCamera& camera,
       const glm::dmat4& unrealWorldToTileset);
 
-  std::vector<UnrealCameraParameters> GetCameras() const;
-  std::vector<UnrealCameraParameters> GetPlayerCameras() const;
-  std::vector<UnrealCameraParameters> GetSceneCaptures() const;
+  std::vector<FCesiumCamera> GetCameras() const;
+  std::vector<FCesiumCamera> GetPlayerCameras() const;
+  std::vector<FCesiumCamera> GetSceneCaptures() const;
 
+public:
+  /**
+   * Update the transforms of the glTF components based on the
+   * the transform of the root component.
+   *
+   * This is supposed to be called during Tick, if the transform of
+   * the root component has changed since the previous Tick.
+   */
+  void UpdateTransformFromCesium();
+
+private:
   /**
    * Writes the values of all properties of this actor into the
    * TilesetOptions, to take them into account during the next
@@ -605,7 +766,7 @@ private:
   void AddFocusViewportDelegate();
 
 #if WITH_EDITOR
-  std::vector<UnrealCameraParameters> GetEditorCameras() const;
+  std::vector<FCesiumCamera> GetEditorCameras() const;
 
   /**
    * Will focus all viewports on this tileset.
@@ -633,7 +794,6 @@ private:
   uint32_t _lastTilesCulled;
   uint32_t _lastMaxDepthVisited;
 
-  bool _updateGeoreferenceOnBoundingVolumeReady;
   std::chrono::high_resolution_clock::time_point _startTime;
 
   bool _captureMovieMode;
